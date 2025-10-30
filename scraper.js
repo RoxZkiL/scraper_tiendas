@@ -11,7 +11,9 @@ const urls = [
     tienda: "Mercado Libre",
     url: "https://www.mercadolibre.cl/procesador-amd-ryzen-5-9600x-am5-39ghz54ghz-/up/MLCU3244552173",
     selectorPrecio: ".andes-money-amount__fraction",
-    selector_disponible: ".ui-pdp-action--buy-button",
+    selector_disponible: ".ui-pdp-buybox__quantity__available",
+    tomarSegundoPrecio: false,
+    esperaExtra: 4000, // Mercado Libre necesita más tiempo
   },
   {
     tienda: "Tecnomas",
@@ -56,7 +58,8 @@ const urls = [
     tienda: "SP Digital",
     url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
     selectorPrecio: null,
-    selector_disponible: "[data-testid='add-to-cart-button']",
+    selector_disponible: "button[class*='add-to-cart']",
+    esperaExtra: 5000, // SP Digital carga con React
   },
 ];
 
@@ -232,10 +235,11 @@ function generarMensaje(datos, comparacion) {
     for (const cambio of bajadas) {
       const stockIcon = cambio.disponible ? '✅' : '❌';
       mensaje += `• ${cambio.tienda} ${stockIcon}\n`;
-      mensaje += `  Antes: $${cambio.precioAnterior.toLocaleString('es-CL')}\n`;
-      mensaje += `  Ahora: $${cambio.precioActual.toLocaleString('es-CL')}\n`;
-      mensaje += `  Ahorro: $${cambio.ahorro.toLocaleString('es-CL')}\n\n`;
+      mensaje += `  Antes: ${cambio.precioAnterior.toLocaleString('es-CL')}\n`;
+      mensaje += `  Ahora: ${cambio.precioActual.toLocaleString('es-CL')}\n`;
+      mensaje += `  Ahorro: ${cambio.ahorro.toLocaleString('es-CL')}\n\n`;
     }
+    mensaje += '━━━━━━━━━━━━━━━━━\n\n';
   }
 
   // Top 3 mejores precios
@@ -255,16 +259,44 @@ function generarMensaje(datos, comparacion) {
   top3.forEach((t, i) => {
     const stockIcon = t.disponible ? '✅' : '❌';
     mensaje += `${i + 1}. <b>${t.tienda}</b> ${stockIcon}\n`;
-    mensaje += `   💰 $${t.precio.toLocaleString('es-CL')}\n`;
+    mensaje += `   💰 ${t.precio.toLocaleString('es-CL')}\n`;
     mensaje += `   🔗 ${t.url}\n\n`;
   });
+
+  mensaje += '━━━━━━━━━━━━━━━━━\n\n';
+
+  // NUEVA SECCIÓN: Lista completa de precios
+  mensaje += '📋 <b>TODOS LOS PRECIOS:</b>\n\n';
+  
+  const todosOrdenados = [...datos.resultados]
+    .filter(r => r.precio)
+    .sort((a, b) => a.precio - b.precio);
+
+  todosOrdenados.forEach((t, index) => {
+    const stockIcon = t.disponible ? '✅' : '❌';
+    const numero = `${index + 1}`.padStart(2, ' ');
+    mensaje += `${numero}. ${t.tienda} ${stockIcon}\n`;
+    mensaje += `    💰 ${t.precio.toLocaleString('es-CL')}\n`;
+  });
+
+  // Productos sin precio
+  const sinPrecio = datos.resultados.filter(r => !r.precio);
+  if (sinPrecio.length > 0) {
+    mensaje += `\n⚠️ <b>Sin datos:</b>\n`;
+    sinPrecio.forEach(t => {
+      mensaje += `   • ${t.tienda}\n`;
+    });
+  }
+
+  mensaje += '\n━━━━━━━━━━━━━━━━━\n\n';
 
   // Estadísticas
   const totalConStock = conStock.length;
   const totalSinStock = sinStock.length;
+  const exitosos = datos.resultados.filter(r => r.precio).length;
   
-  mensaje += '━━━━━━━━━━━━━━━━━\n';
-  mensaje += `📦 ${totalConStock}/${datos.resultados.length} con stock\n`;
+  mensaje += `📦 ${totalConStock} con stock | ${totalSinStock} sin stock\n`;
+  mensaje += `✅ ${exitosos}/${datos.resultados.length} precios obtenidos\n`;
   mensaje += `⏰ ${new Date().toLocaleString('es-CL', { timeZone: 'America/Santiago' })}`;
 
   return mensaje;
@@ -290,7 +322,7 @@ async function scrape() {
   const resultados = [];
 
   for (const tiendaObj of urls) {
-    const { tienda, url, selectorPrecio, selector_disponible, tomarSegundoPrecio } = tiendaObj;
+    const { tienda, url, selectorPrecio, selector_disponible, tomarSegundoPrecio, esperaExtra } = tiendaObj;
     console.log(`🛒 ${tienda}...`);
     
     let precio = null;
@@ -299,10 +331,13 @@ async function scrape() {
 
     try {
       await page.goto(url, { 
-        waitUntil: "domcontentloaded", 
+        waitUntil: "networkidle2", 
         timeout: 60000 
       });
-      await new Promise(r => setTimeout(r, 3000));
+      
+      // Espera base + espera extra si la tiene configurada
+      const tiempoEspera = esperaExtra || 3000;
+      await new Promise(r => setTimeout(r, tiempoEspera));
 
       // Extraer precio
       if (selectorPrecio) {
