@@ -8,16 +8,36 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install puppeteer
-      - run: node scraper.js
+      
+      # Instalar dependencias del sistema para puppeteer-real-browser
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            x11-xserver-utils \
+            libnss3 \
+            libatk-bridge2.0-0 \
+            libgtk-3-0 \
+            libgbm1
+      
+      - name: Install Node dependencies
+        run: npm install
+      
+      - name: Run scraper
+        run: node scraper.js
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISPLAY: ':99'
+      
       - name: Upload results and debug files
         uses: actions/upload-artifact@v4
         if: always()
