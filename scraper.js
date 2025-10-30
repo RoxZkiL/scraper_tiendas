@@ -1,4 +1,10 @@
+// scraper.js - Versión simplificada para GitHub Actions + Telegram
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
+
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 const urls = [
   {
@@ -63,7 +69,6 @@ function limpiarPrecio(text) {
 
 async function verificarDisponibilidad(page, selector_disponible) {
   try {
-    // Estrategia 1: Verificar si existe el selector y no está deshabilitado
     if (selector_disponible) {
       const resultado = await page.evaluate((selector) => {
         const elemento = document.querySelector(selector);
@@ -74,12 +79,9 @@ async function verificarDisponibilidad(page, selector_disponible) {
                         elemento.classList.contains('disabled') ||
                         elemento.classList.contains('out-of-stock');
         
-        const texto = elemento.innerText?.toLowerCase() || '';
-        
         return {
           existe: true,
           disabled,
-          texto,
           visible: elemento.offsetParent !== null
         };
       }, selector_disponible);
@@ -89,18 +91,15 @@ async function verificarDisponibilidad(page, selector_disponible) {
       }
     }
     
-    // Estrategia 2: Buscar texto "agotado" o "sin stock" en la página
     const hayTextoAgotado = await page.evaluate(() => {
       const texto = document.body.innerText.toLowerCase();
       return texto.includes('agotado') || 
              texto.includes('sin stock') || 
-             texto.includes('out of stock') ||
-             texto.includes('producto no disponible');
+             texto.includes('out of stock');
     });
     
     if (hayTextoAgotado) return false;
     
-    // Estrategia 3: Buscar cualquier botón de agregar al carro
     const hayBotonCompra = await page.evaluate(() => {
       const botones = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
       return botones.some(btn => {
@@ -110,9 +109,7 @@ async function verificarDisponibilidad(page, selector_disponible) {
         const esBotonCompra = texto.includes('agregar') || 
                              texto.includes('añadir') || 
                              texto.includes('comprar') ||
-                             texto.includes('add to cart') ||
-                             classes.includes('add-to-cart') ||
-                             classes.includes('buy');
+                             classes.includes('add-to-cart');
         
         const noEstaDeshabilitado = !btn.disabled && 
                                    btn.getAttribute('disabled') === null &&
@@ -125,92 +122,256 @@ async function verificarDisponibilidad(page, selector_disponible) {
     return hayBotonCompra;
     
   } catch (error) {
-    console.error(`   ⚠️ Error verificando disponibilidad: ${error.message}`);
     return null;
   }
 }
 
+async function enviarTelegram(mensaje) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.log('⚠️ Telegram no configurado');
+    return;
+  }
+
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: mensaje,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      })
+    });
+
+    if (response.ok) {
+      console.log('✅ Mensaje enviado a Telegram');
+    } else {
+      console.error('❌ Error Telegram:', await response.text());
+    }
+  } catch (error) {
+    console.error('❌ Error enviando a Telegram:', error.message);
+  }
+}
+
+function cargarHistorial() {
+  try {
+    if (fs.existsSync('results.json')) {
+      return JSON.parse(fs.readFileSync('results.json', 'utf8'));
+    }
+  } catch (error) {
+    console.log('No hay historial previo');
+  }
+  return null;
+}
+
+function guardarResultados(datos) {
+  fs.writeFileSync('results.json', JSON.stringify(datos, null, 2));
+}
+
+function compararPrecios(actual, anterior) {
+  if (!anterior || !anterior.resultados) {
+    return {
+      hayBajadas: false,
+      cambios: [],
+      mensaje: '🆕 Primera ejecución - sin comparación previa'
+    };
+  }
+
+  const cambios = [];
+  let hayBajadas = false;
+
+  for (const tiendaActual of actual.resultados) {
+    const tiendaAnterior = anterior.resultados.find(t => t.tienda === tiendaActual.tienda);
+    
+    if (tiendaAnterior && tiendaActual.precio && tiendaAnterior.precio) {
+      const diferencia = tiendaActual.precio - tiendaAnterior.precio;
+      
+      if (diferencia < 0) {
+        hayBajadas = true;
+        cambios.push({
+          tienda: tiendaActual.tienda,
+          tipo: 'bajada',
+          precioAnterior: tiendaAnterior.precio,
+          precioActual: tiendaActual.precio,
+          ahorro: Math.abs(diferencia),
+          disponible: tiendaActual.disponible
+        });
+      } else if (diferencia > 0) {
+        cambios.push({
+          tienda: tiendaActual.tienda,
+          tipo: 'subida',
+          precioAnterior: tiendaAnterior.precio,
+          precioActual: tiendaActual.precio,
+          aumento: diferencia,
+          disponible: tiendaActual.disponible
+        });
+      }
+    }
+  }
+
+  return { hayBajadas, cambios };
+}
+
+function generarMensaje(datos, comparacion) {
+  let mensaje = '';
+  
+  // Encabezado
+  if (comparacion.hayBajadas) {
+    mensaje += '🎉 <b>¡HAY BAJADAS DE PRECIO!</b> 🎉\n\n';
+  } else {
+    mensaje += '📊 <b>Actualización de Precios</b>\n\n';
+  }
+
+  // Cambios importantes
+  const bajadas = comparacion.cambios.filter(c => c.tipo === 'bajada');
+  if (bajadas.length > 0) {
+    mensaje += '💸 <b>BAJADAS:</b>\n';
+    for (const cambio of bajadas) {
+      const stockIcon = cambio.disponible ? '✅' : '❌';
+      mensaje += `• ${cambio.tienda} ${stockIcon}\n`;
+      mensaje += `  Antes: $${cambio.precioAnterior.toLocaleString('es-CL')}\n`;
+      mensaje += `  Ahora: $${cambio.precioActual.toLocaleString('es-CL')}\n`;
+      mensaje += `  Ahorro: $${cambio.ahorro.toLocaleString('es-CL')}\n\n`;
+    }
+  }
+
+  // Top 3 mejores precios
+  const conStock = datos.resultados
+    .filter(r => r.precio && r.disponible)
+    .sort((a, b) => a.precio - b.precio);
+  
+  const sinStock = datos.resultados
+    .filter(r => r.precio && !r.disponible)
+    .sort((a, b) => a.precio - b.precio);
+
+  const top3 = conStock.length >= 3 
+    ? conStock.slice(0, 3)
+    : [...conStock, ...sinStock.slice(0, 3 - conStock.length)];
+
+  mensaje += '🏆 <b>TOP 3 MEJORES PRECIOS:</b>\n\n';
+  top3.forEach((t, i) => {
+    const stockIcon = t.disponible ? '✅' : '❌';
+    mensaje += `${i + 1}. <b>${t.tienda}</b> ${stockIcon}\n`;
+    mensaje += `   💰 $${t.precio.toLocaleString('es-CL')}\n`;
+    mensaje += `   🔗 ${t.url}\n\n`;
+  });
+
+  // Estadísticas
+  const totalConStock = conStock.length;
+  const totalSinStock = sinStock.length;
+  
+  mensaje += '━━━━━━━━━━━━━━━━━\n';
+  mensaje += `📦 ${totalConStock}/${datos.resultados.length} con stock\n`;
+  mensaje += `⏰ ${new Date().toLocaleString('es-CL', { timeZone: 'America/Santiago' })}`;
+
+  return mensaje;
+}
+
 async function scrape() {
+  console.log('🚀 Iniciando scraper...\n');
+
   const browser = await puppeteer.launch({
-    headless: false,
-    slowMo: 50,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ],
   });
 
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
   const resultados = [];
 
   for (const tiendaObj of urls) {
     const { tienda, url, selectorPrecio, selector_disponible, tomarSegundoPrecio } = tiendaObj;
-    console.log(`🛒 Visitando ${tienda}: ${url}`);
-    let intentos = 0;
-    let success = false;
+    console.log(`🛒 ${tienda}...`);
+    
     let precio = null;
     let disponible = null;
+    let ok = false;
 
-    while (intentos < 3 && !success) {
-      try {
-        intentos++;
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-        await new Promise(r => setTimeout(r, 3000));
+    try {
+      await page.goto(url, { 
+        waitUntil: "domcontentloaded", 
+        timeout: 60000 
+      });
+      await new Promise(r => setTimeout(r, 3000));
 
-        // Extraer precio
-        if (selectorPrecio) {
-          if (tomarSegundoPrecio) {
-            precio = await page.evaluate((selector) => {
-              const elementos = document.querySelectorAll(selector);
-              return elementos.length >= 2 ? elementos[1].innerText : null;
-            }, selectorPrecio);
-          } else {
-            precio = await page.$eval(selectorPrecio, el => el.innerText).catch(() => null);
-          }
-          precio = limpiarPrecio(precio);
+      // Extraer precio
+      if (selectorPrecio) {
+        if (tomarSegundoPrecio) {
+          precio = await page.evaluate((selector) => {
+            const elementos = document.querySelectorAll(selector);
+            return elementos.length >= 2 ? elementos[1].innerText : null;
+          }, selectorPrecio);
         } else {
-          // Caso especial SP Digital
-          const html = await page.content();
-          const match = html.match(/Otros medios de pago<\/span>.*?Fractal-Price--price[^>]*>\$?([\d\.]+)</s);
-          if (match) {
-            precio = parseInt(match[1].replace(/\./g, ''));
-          } else {
-            const matches = html.match(/Fractal-Price--price[^>]*>\$?([\d\.]+)/g);
-            if (matches && matches.length > 0) {
-              const ultimoPrecio = matches[matches.length - 1];
-              const valorMatch = ultimoPrecio.match(/\$?([\d\.]+)/);
-              if (valorMatch) {
-                precio = parseInt(valorMatch[1].replace(/\./g, ''));
-              }
+          precio = await page.$eval(selectorPrecio, el => el.innerText).catch(() => null);
+        }
+        precio = limpiarPrecio(precio);
+      } else {
+        // SP Digital
+        const html = await page.content();
+        const match = html.match(/Otros medios de pago<\/span>.*?Fractal-Price--price[^>]*>\$?([\d\.]+)</s);
+        if (match) {
+          precio = parseInt(match[1].replace(/\./g, ''));
+        } else {
+          const matches = html.match(/Fractal-Price--price[^>]*>\$?([\d\.]+)/g);
+          if (matches && matches.length > 0) {
+            const ultimoPrecio = matches[matches.length - 1];
+            const valorMatch = ultimoPrecio.match(/\$?([\d\.]+)/);
+            if (valorMatch) {
+              precio = parseInt(valorMatch[1].replace(/\./g, ''));
             }
           }
         }
-
-        // Verificar disponibilidad
-        disponible = await verificarDisponibilidad(page, selector_disponible);
-
-        success = true;
-        
-        const dispTexto = disponible === true ? '✅ Disponible' : 
-                         disponible === false ? '❌ Sin stock' : '⚠️ Indeterminado';
-        console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'} | ${dispTexto}`);
-        
-      } catch (err) {
-        console.error(`❌ Error en ${tienda} (intento ${intentos}):`, err.message);
-        await new Promise(r => setTimeout(r, 2000));
       }
+
+      disponible = await verificarDisponibilidad(page, selector_disponible);
+      ok = precio !== null;
+      
+      const icon = disponible ? '✅' : '❌';
+      console.log(`   $${precio?.toLocaleString('es-CL') || 'N/A'} ${icon}`);
+      
+    } catch (err) {
+      console.error(`   ❌ Error: ${err.message}`);
     }
 
-    resultados.push({
-      tienda,
-      precio,
-      disponible,
-      ok: success,
-      intentos
-    });
+    resultados.push({ tienda, url, precio, disponible, ok });
   }
 
-  console.log("\n📦 RESULTADOS FINALES:\n", JSON.stringify(resultados, null, 2));
   await browser.close();
+
+  const datos = {
+    timestamp: new Date().toISOString(),
+    resultados,
+    exitosos: resultados.filter(r => r.ok).length
+  };
+
+  // Comparar con historial
+  const historial = cargarHistorial();
+  const comparacion = compararPrecios(datos, historial);
+  
+  // Guardar nuevos resultados
+  guardarResultados(datos);
+
+  // Generar y enviar mensaje
+  const mensaje = generarMensaje(datos, comparacion);
+  console.log('\n📱 Enviando a Telegram...\n');
+  await enviarTelegram(mensaje);
+
+  console.log(`\n✅ Completado: ${datos.exitosos}/${resultados.length} exitosos`);
 }
 
-scrape();
+scrape()
+  .then(() => process.exit(0))
+  .catch(error => {
+    console.error('❌ Error fatal:', error);
+    process.exit(1);
+  });
