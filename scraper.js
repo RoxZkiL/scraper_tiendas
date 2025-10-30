@@ -1,7 +1,6 @@
-// scraper.js - Versión simplificada para GitHub Actions + Telegram
+// scraper.js - Versión optimizada para GitHub Actions + Telegram
 const puppeteer = require('puppeteer');
 const fs = require('fs');
-const path = require('path');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -12,8 +11,7 @@ const urls = [
     url: "https://www.mercadolibre.cl/procesador-amd-ryzen-5-9600x-am5-39ghz54ghz-/up/MLCU3244552173",
     selectorPrecio: ".andes-money-amount__fraction",
     selector_disponible: ".ui-pdp-buybox__quantity__available",
-    tomarSegundoPrecio: false,
-    esperaExtra: 4000, // Mercado Libre necesita más tiempo
+    esperaExtra: 5000,
   },
   {
     tienda: "Tecnomas",
@@ -59,7 +57,7 @@ const urls = [
     url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
     selectorPrecio: null,
     selector_disponible: "button[class*='add-to-cart']",
-    esperaExtra: 5000, // SP Digital carga con React
+    esperaExtra: 6000,
   },
 ];
 
@@ -221,28 +219,25 @@ function compararPrecios(actual, anterior) {
 function generarMensaje(datos, comparacion) {
   let mensaje = '';
   
-  // Encabezado
   if (comparacion.hayBajadas) {
     mensaje += '🎉 <b>¡HAY BAJADAS DE PRECIO!</b> 🎉\n\n';
   } else {
     mensaje += '📊 <b>Actualización de Precios</b>\n\n';
   }
 
-  // Cambios importantes
   const bajadas = comparacion.cambios.filter(c => c.tipo === 'bajada');
   if (bajadas.length > 0) {
     mensaje += '💸 <b>BAJADAS:</b>\n';
     for (const cambio of bajadas) {
       const stockIcon = cambio.disponible ? '✅' : '❌';
       mensaje += `• ${cambio.tienda} ${stockIcon}\n`;
-      mensaje += `  Antes: ${cambio.precioAnterior.toLocaleString('es-CL')}\n`;
-      mensaje += `  Ahora: ${cambio.precioActual.toLocaleString('es-CL')}\n`;
-      mensaje += `  Ahorro: ${cambio.ahorro.toLocaleString('es-CL')}\n\n`;
+      mensaje += `  Antes: $${cambio.precioAnterior.toLocaleString('es-CL')}\n`;
+      mensaje += `  Ahora: $${cambio.precioActual.toLocaleString('es-CL')}\n`;
+      mensaje += `  Ahorro: $${cambio.ahorro.toLocaleString('es-CL')}\n\n`;
     }
     mensaje += '━━━━━━━━━━━━━━━━━\n\n';
   }
 
-  // Top 3 mejores precios
   const conStock = datos.resultados
     .filter(r => r.precio && r.disponible)
     .sort((a, b) => a.precio - b.precio);
@@ -259,13 +254,11 @@ function generarMensaje(datos, comparacion) {
   top3.forEach((t, i) => {
     const stockIcon = t.disponible ? '✅' : '❌';
     mensaje += `${i + 1}. <b>${t.tienda}</b> ${stockIcon}\n`;
-    mensaje += `   💰 ${t.precio.toLocaleString('es-CL')}\n`;
+    mensaje += `   💰 $${t.precio.toLocaleString('es-CL')}\n`;
     mensaje += `   🔗 ${t.url}\n\n`;
   });
 
   mensaje += '━━━━━━━━━━━━━━━━━\n\n';
-
-  // NUEVA SECCIÓN: Lista completa de precios
   mensaje += '📋 <b>TODOS LOS PRECIOS:</b>\n\n';
   
   const todosOrdenados = [...datos.resultados]
@@ -276,10 +269,9 @@ function generarMensaje(datos, comparacion) {
     const stockIcon = t.disponible ? '✅' : '❌';
     const numero = `${index + 1}`.padStart(2, ' ');
     mensaje += `${numero}. ${t.tienda} ${stockIcon}\n`;
-    mensaje += `    💰 ${t.precio.toLocaleString('es-CL')}\n`;
+    mensaje += `    💰 $${t.precio.toLocaleString('es-CL')}\n`;
   });
 
-  // Productos sin precio
   const sinPrecio = datos.resultados.filter(r => !r.precio);
   if (sinPrecio.length > 0) {
     mensaje += `\n⚠️ <b>Sin datos:</b>\n`;
@@ -290,7 +282,6 @@ function generarMensaje(datos, comparacion) {
 
   mensaje += '\n━━━━━━━━━━━━━━━━━\n\n';
 
-  // Estadísticas
   const totalConStock = conStock.length;
   const totalSinStock = sinStock.length;
   const exitosos = datos.resultados.filter(r => r.precio).length;
@@ -320,7 +311,6 @@ async function scrape() {
 
   const page = await browser.newPage();
   
-  // Headers más realistas
   await page.setExtraHTTPHeaders({
     'Accept-Language': 'es-CL,es;q=0.9,en;q=0.8',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -329,7 +319,6 @@ async function scrape() {
   await page.setViewport({ width: 1920, height: 1080 });
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
   
-  // Ocultar que es un bot
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
@@ -350,9 +339,12 @@ async function scrape() {
         timeout: 60000 
       });
       
-      // Espera base + espera extra si la tiene configurada
       const tiempoEspera = esperaExtra || 3000;
       await new Promise(r => setTimeout(r, tiempoEspera));
+      
+      // Scroll para lazy loading
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await new Promise(r => setTimeout(r, 1000));
 
       // Extraer precio
       if (selectorPrecio) {
@@ -362,24 +354,74 @@ async function scrape() {
             return elementos.length >= 2 ? elementos[1].innerText : null;
           }, selectorPrecio);
         } else {
-          precio = await page.$eval(selectorPrecio, el => el.innerText).catch(() => null);
+          // Intentar selector, si falla buscar alternativas
+          precio = await page.$eval(selectorPrecio, el => el.innerText).catch(async () => {
+            console.log(`   ⚠️ Selector principal falló, buscando alternativas...`);
+            return await page.evaluate((sel) => {
+              const element = document.querySelector(sel);
+              if (element) return element.textContent || element.innerText;
+              
+              // Buscar en atributos y clases relacionadas
+              const priceElements = document.querySelectorAll('[data-price], [class*="price"], [class*="Price"]');
+              for (let el of priceElements) {
+                const text = el.textContent || el.innerText;
+                if (text && /\d{3,}/.test(text.replace(/\./g, ''))) {
+                  const match = text.match(/[\d\.]+/);
+                  if (match) return match[0];
+                }
+              }
+              return null;
+            }, selectorPrecio);
+          });
         }
         precio = limpiarPrecio(precio);
       } else {
-        // SP Digital
+        // SP Digital - extracción especial
+        console.log(`   🔍 Buscando precio en SP Digital...`);
+        
         const html = await page.content();
-        const match = html.match(/Otros medios de pago<\/span>.*?Fractal-Price--price[^>]*>\$?([\d\.]+)</s);
-        if (match) {
-          precio = parseInt(match[1].replace(/\./g, ''));
-        } else {
-          const matches = html.match(/Fractal-Price--price[^>]*>\$?([\d\.]+)/g);
-          if (matches && matches.length > 0) {
-            const ultimoPrecio = matches[matches.length - 1];
-            const valorMatch = ultimoPrecio.match(/\$?([\d\.]+)/);
-            if (valorMatch) {
-              precio = parseInt(valorMatch[1].replace(/\./g, ''));
+        
+        // Guardar HTML para debug
+        fs.writeFileSync('sp-digital-debug.html', html);
+        
+        // Múltiples intentos de extracción
+        let match = html.match(/Otros medios de pago<\/span>.*?>\$?([\d\.]+)</s);
+        
+        if (!match) {
+          // Buscar todos los precios en el rango esperado
+          const todosPrecios = html.match(/\$?([\d]{3}\.[\d]{3})/g);
+          if (todosPrecios) {
+            console.log(`   📊 Precios encontrados: ${todosPrecios.join(', ')}`);
+            const preciosValidos = todosPrecios
+              .map(p => parseInt(p.replace(/[^0-9]/g, '')))
+              .filter(p => p > 100000 && p < 500000);
+            
+            if (preciosValidos.length > 0) {
+              precio = preciosValidos[preciosValidos.length - 1];
+              console.log(`   ✓ Precio seleccionado: ${precio}`);
             }
           }
+        } else {
+          precio = parseInt(match[1].replace(/\./g, ''));
+        }
+        
+        // Último intento: ejecutar en el DOM
+        if (!precio) {
+          console.log(`   🔄 Intento final en DOM...`);
+          precio = await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            for (let el of elements) {
+              const text = el.textContent;
+              if (text && text.length < 20) {
+                const match = text.match(/\$?([\d]{3}\.[\d]{3})/);
+                if (match) {
+                  const val = parseInt(match[1].replace(/\./g, ''));
+                  if (val > 100000 && val < 500000) return val;
+                }
+              }
+            }
+            return null;
+          });
         }
       }
 
@@ -387,10 +429,28 @@ async function scrape() {
       ok = precio !== null;
       
       const icon = disponible ? '✅' : '❌';
-      console.log(`   $${precio?.toLocaleString('es-CL') || 'N/A'} ${icon}`);
+      console.log(`   💰 $${precio?.toLocaleString('es-CL') || 'N/A'} ${icon}`);
+      
+      // Screenshot en caso de fallo
+      if (!precio) {
+        try {
+          await page.screenshot({ 
+            path: `error-${tienda.replace(/\s+/g, '-')}.png`,
+            fullPage: false
+          });
+          console.log(`   📸 Screenshot guardado`);
+        } catch (e) {}
+      }
       
     } catch (err) {
       console.error(`   ❌ Error: ${err.message}`);
+      
+      try {
+        await page.screenshot({ 
+          path: `error-${tienda.replace(/\s+/g, '-')}.png`,
+          fullPage: false
+        });
+      } catch (e) {}
     }
 
     resultados.push({ tienda, url, precio, disponible, ok });
@@ -404,14 +464,11 @@ async function scrape() {
     exitosos: resultados.filter(r => r.ok).length
   };
 
-  // Comparar con historial
   const historial = cargarHistorial();
   const comparacion = compararPrecios(datos, historial);
   
-  // Guardar nuevos resultados
   guardarResultados(datos);
 
-  // Generar y enviar mensaje
   const mensaje = generarMensaje(datos, comparacion);
   console.log('\n📱 Enviando a Telegram...\n');
   await enviarTelegram(mensaje);
