@@ -1,4 +1,4 @@
-// scraper.js - Versión mejorada con anti-detección avanzada
+// scraper.js - Con API de Mercado Libre y sin SP Digital
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 
@@ -8,11 +8,9 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const urls = [
   {
     tienda: "Mercado Libre",
-    url: "https://www.mercadolibre.cl/procesador-amd-ryzen-5-9600x-am5-39ghz54ghz-/up/MLCU3244552173",
-    selectorPrecio: null,
-    selector_disponible: ".ui-pdp-buybox__quantity__available",
-    esperaExtra: 8000,
-    manejarIntercepcion: true, // Manejar página de login
+    // Usando la API oficial de Mercado Libre
+    esAPI: true,
+    itemId: "MLCU3244552173", // ID del producto
   },
   {
     tienda: "Tecnomas",
@@ -53,14 +51,14 @@ const urls = [
     selector_disponible: ".add-to-cart",
     tomarSegundoPrecio: true,
   },
-  {
-    tienda: "SP Digital",
-    url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
-    selectorPrecio: null,
-    selector_disponible: "button[class*='add-to-cart']",
-    esperaExtra: 10000,
-    bypassCloudflare: true, // Activar bypass especial
-  },
+  // SP Digital comentado porque Cloudflare bloquea siempre
+  // {
+  //   tienda: "SP Digital",
+  //   url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
+  //   selectorPrecio: null,
+  //   selector_disponible: "button[class*='add-to-cart']",
+  //   esperaExtra: 12000,
+  // },
 ];
 
 function limpiarPrecio(text) {
@@ -126,6 +124,38 @@ async function verificarDisponibilidad(page, selector_disponible) {
     
   } catch (error) {
     return null;
+  }
+}
+
+// Función para obtener datos de Mercado Libre vía API
+async function obtenerDatosMercadoLibre(itemId) {
+  try {
+    console.log(`   🔍 Consultando API de Mercado Libre...`);
+    
+    const response = await fetch(`https://api.mercadolibre.com/items/${itemId}`);
+    
+    if (!response.ok) {
+      console.log(`   ❌ Error API: ${response.status}`);
+      return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
+    }
+    
+    const data = await response.json();
+    
+    const precio = data.price || null;
+    const disponible = data.status === 'active' && 
+                      data.available_quantity > 0 &&
+                      !data.sold_out;
+    const url = data.permalink || `https://www.mercadolibre.cl/p/${itemId}`;
+    
+    console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'}`);
+    console.log(`   📦 Stock: ${data.available_quantity || 0} unidades`);
+    console.log(`   ✅ Disponible: ${disponible ? 'Sí' : 'No'}`);
+    
+    return { precio, disponible, url };
+    
+  } catch (error) {
+    console.error(`   ❌ Error consultando API: ${error.message}`);
+    return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
   }
 }
 
@@ -295,224 +325,80 @@ function generarMensaje(datos, comparacion) {
   return mensaje;
 }
 
-// Función para simular comportamiento humano
-async function comportamientoHumano(page) {
-  // Movimientos aleatorios del mouse
-  await page.mouse.move(100, 100);
-  await page.mouse.move(300, 200);
-  await new Promise(r => setTimeout(r, 500 + Math.random() * 1000));
-  
-  // Scroll suave
-  await page.evaluate(() => {
-    window.scrollTo({ top: 300, behavior: 'smooth' });
-  });
-  await new Promise(r => setTimeout(r, 1000));
-}
-
-// Configurar página con anti-detección avanzada
-async function configurarPaginaAntiDeteccion(page) {
-  // Ocultar webdriver y automatización
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    
-    // Eliminar variables de automatización
-    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-    
-    // Simular plugins y características de navegador real
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5]
-    });
-    
-    Object.defineProperty(navigator, 'languages', {
-      get: () => ['es-CL', 'es', 'en']
-    });
-    
-    // Simular características de Chrome real
-    window.chrome = {
-      runtime: {}
-    };
-    
-    // Permisos
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
-    );
-  });
-
-  // Headers realistas
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'es-CL,es;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Cache-Control': 'max-age=0',
-    'Sec-Ch-Ua': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="24"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Upgrade-Insecure-Requests': '1'
-  });
-
-  // User agent realista
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  );
-  
-  await page.setViewport({ 
-    width: 1920, 
-    height: 1080,
-    deviceScaleFactor: 1,
-    hasTouch: false,
-    isLandscape: true
-  });
-}
-
 async function scrape() {
-  console.log('🚀 Iniciando scraper con anti-detección avanzada...\n');
+  console.log('🚀 Iniciando scraper optimizado (API ML + sin SP Digital)...\n');
 
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-web-security',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-infobars',
-      '--window-size=1920,1080',
-      '--start-maximized',
-      // Args adicionales para evitar detección
-      '--disable-blink-features=AutomationControlled',
-      '--exclude-switches=enable-automation',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-extensions'
-    ],
-    ignoreHTTPSErrors: true
-  });
-
-  const page = await browser.newPage();
-  await configurarPaginaAntiDeteccion(page);
-
+  let browser;
+  let page;
+  
   const resultados = [];
 
   for (const tiendaObj of urls) {
-    const { 
-      tienda, url, selectorPrecio, selector_disponible, 
-      tomarSegundoPrecio, esperaExtra, manejarIntercepcion, 
-      bypassCloudflare 
-    } = tiendaObj;
-    
+    const { tienda, esAPI, itemId } = tiendaObj;
     console.log(`🛒 ${tienda}...`);
     
     let precio = null;
     let disponible = null;
+    let url = tiendaObj.url || '';
     let ok = false;
 
+    // MERCADO LIBRE: Usar API
+    if (esAPI && itemId) {
+      const datos = await obtenerDatosMercadoLibre(itemId);
+      precio = datos.precio;
+      disponible = datos.disponible;
+      url = datos.url;
+      ok = precio !== null;
+      
+      resultados.push({ tienda, url, precio, disponible, ok });
+      continue; // Siguiente tienda
+    }
+
+    // RESTO DE TIENDAS: Usar Puppeteer
     try {
-      // Navegar con opciones más realistas
-      const response = await page.goto(url, { 
-        waitUntil: ["domcontentloaded", "networkidle2"],
+      // Inicializar browser solo cuando se necesita
+      if (!browser) {
+        browser = await puppeteer.launch({
+          headless: 'new',
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-blink-features=AutomationControlled',
+          ],
+        });
+        
+        page = await browser.newPage();
+        
+        await page.evaluateOnNewDocument(() => {
+          Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        });
+        
+        await page.setExtraHTTPHeaders({
+          'Accept-Language': 'es-CL,es;q=0.9,en;q=0.8',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        });
+        
+        await page.setViewport({ width: 1920, height: 1080 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      }
+
+      const { selectorPrecio, selector_disponible, tomarSegundoPrecio, esperaExtra } = tiendaObj;
+      
+      await page.goto(url, { 
+        waitUntil: "networkidle2", 
         timeout: 60000 
       });
-
-      console.log(`   📡 Status: ${response?.status()}`);
-      
-      // Comportamiento humano inicial
-      await comportamientoHumano(page);
       
       const tiempoEspera = esperaExtra || 3000;
       await new Promise(r => setTimeout(r, tiempoEspera));
-
-      // MANEJO ESPECIAL: Mercado Libre - Detectar y manejar página de login
-      if (manejarIntercepcion) {
-        const urlActual = page.url();
-        const contenidoPagina = await page.content();
-        
-        console.log(`   🔍 URL actual: ${urlActual}`);
-        
-        // Verificar si estamos en la página de login/intercepción
-        const esIntercepcion = contenidoPagina.includes('Ya tengo cuenta') || 
-                              contenidoPagina.includes('Soy nuevo') ||
-                              urlActual.includes('login');
-        
-        if (esIntercepcion) {
-          console.log(`   🚪 Detectada página de login, intentando clickear "Ya tengo cuenta"...`);
-          
-          try {
-            // Buscar y clickear el botón "Ya tengo cuenta"
-            const botonClicked = await page.evaluate(() => {
-              const botones = Array.from(document.querySelectorAll('button, a'));
-              const boton = botones.find(b => 
-                (b.textContent || '').toLowerCase().includes('ya tengo cuenta') ||
-                (b.textContent || '').toLowerCase().includes('tengo cuenta')
-              );
-              
-              if (boton) {
-                boton.click();
-                return true;
-              }
-              return false;
-            });
-            
-            if (botonClicked) {
-              console.log(`   ✓ Click realizado, esperando redirección...`);
-              await page.waitForNavigation({ timeout: 10000, waitUntil: 'networkidle2' }).catch(() => {});
-              await new Promise(r => setTimeout(r, 3000));
-            } else {
-              console.log(`   ⚠️ No se encontró botón para clickear`);
-            }
-          } catch (e) {
-            console.log(`   ⚠️ Error manejando intercepción: ${e.message}`);
-          }
-        }
-      }
-
-      // MANEJO ESPECIAL: SP Digital - Bypass Cloudflare
-      if (bypassCloudflare) {
-        const esCloudflare = await page.evaluate(() => {
-          return document.body.innerHTML.includes('Cloudflare') || 
-                 document.body.innerHTML.includes('challenge');
-        });
-        
-        if (esCloudflare) {
-          console.log(`   ⏳ Detectado Cloudflare, esperando challenge...`);
-          await new Promise(r => setTimeout(r, 15000)); // Esperar más tiempo
-          
-          // Reintentar navegación
-          await page.goto(url, { 
-            waitUntil: "networkidle2", 
-            timeout: 60000 
-          });
-          await new Promise(r => setTimeout(r, 5000));
-        }
-      }
       
       // Scroll para lazy loading
-      await page.evaluate(() => {
-        window.scrollTo(0, document.body.scrollHeight / 2);
-      });
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await new Promise(r => setTimeout(r, 1000));
-      await page.evaluate(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-      });
-      await new Promise(r => setTimeout(r, 1500));
-
-      // Guardar HTML para debug
-      const html = await page.content();
-      if (tienda === "SP Digital" || tienda === "Mercado Libre") {
-        fs.writeFileSync(`${tienda.replace(/\s+/g, '-')}-debug.html`, html);
-        console.log(`   💾 HTML guardado para debug`);
-      }
 
       // Extraer precio
       if (selectorPrecio) {
@@ -525,49 +411,6 @@ async function scrape() {
           precio = await page.$eval(selectorPrecio, el => el.innerText).catch(() => null);
         }
         precio = limpiarPrecio(precio);
-      } else {
-        // Extracción inteligente de precio
-        precio = await page.evaluate(() => {
-          const selectors = [
-            '.andes-money-amount__fraction',
-            '[class*="price-tag"]',
-            '[class*="price"]',
-            '[class*="Price"]',
-            '[data-price]',
-            '.price',
-            '.precio'
-          ];
-          
-          for (let selector of selectors) {
-            const elements = document.querySelectorAll(selector);
-            for (let el of elements) {
-              const text = el.textContent || el.innerText;
-              if (text && text.length < 15) {
-                const clean = text.replace(/[^0-9]/g, '');
-                if (clean.length >= 5 && clean.length <= 7) {
-                  const val = parseInt(clean);
-                  if (val > 100000 && val < 500000) {
-                    return val;
-                  }
-                }
-              }
-            }
-          }
-          
-          // Buscar en texto completo
-          const allText = document.body.innerText;
-          const matches = allText.match(/\$?\s*([\d]{3}\.[\d]{3})/g);
-          if (matches) {
-            for (let match of matches) {
-              const val = parseInt(match.replace(/[^0-9]/g, ''));
-              if (val > 100000 && val < 500000) {
-                return val;
-              }
-            }
-          }
-          
-          return null;
-        });
       }
 
       disponible = await verificarDisponibilidad(page, selector_disponible);
@@ -576,35 +419,16 @@ async function scrape() {
       const icon = disponible ? '✅' : '❌';
       console.log(`   💰 $${precio?.toLocaleString('es-CL') || 'N/A'} ${icon}`);
       
-      // Screenshot en caso de fallo
-      if (!precio) {
-        try {
-          await page.screenshot({ 
-            path: `error-${tienda.replace(/\s+/g, '-')}.png`,
-            fullPage: false
-          });
-          console.log(`   📸 Screenshot guardado`);
-        } catch (e) {}
-      }
-      
     } catch (err) {
       console.error(`   ❌ Error: ${err.message}`);
-      
-      try {
-        await page.screenshot({ 
-          path: `error-${tienda.replace(/\s+/g, '-')}.png`,
-          fullPage: false
-        });
-      } catch (e) {}
     }
 
     resultados.push({ tienda, url, precio, disponible, ok });
-    
-    // Pequeña pausa entre tiendas
-    await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
   }
 
-  await browser.close();
+  if (browser) {
+    await browser.close();
+  }
 
   const datos = {
     timestamp: new Date().toISOString(),
