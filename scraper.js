@@ -8,9 +8,10 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const urls = [
   {
     tienda: "Mercado Libre",
-    esAPI: true,
-    itemId: "MLC39391929",
-    usarCatalogo: true,
+    url: "https://www.mercadolibre.cl/p/MLC39391929",
+    selectorPrecio: ".andes-money-amount__fraction",
+    selector_disponible: ".ui-pdp-buybox__quantity__available",
+    esperaExtra: 5000,
   },
   {
     tienda: "Tecnomas",
@@ -58,6 +59,7 @@ const urls = [
     selector_disponible: "button[class*='add-to-cart']",
     usarRealBrowser: true,
     esperaExtra: 15000,
+    extraerPrecioEspecial: true, // Extracción especial para precios con descuento
   },
 ];
 
@@ -448,28 +450,85 @@ async function scrape() {
         const html = await realPage.content();
         fs.writeFileSync('SP-Digital-success.html', html);
         
+        // Extracción especial de precio para SP Digital
         precio = await realPage.evaluate(() => {
-          const selectors = [
-            '[class*="price"]',
-            '[class*="Price"]',
-            '[data-price]',
-          ];
+          // Buscar específicamente "Otros medios de pago" y el precio que le sigue
+          const textoCompleto = document.body.innerText;
           
-          for (let selector of selectors) {
-            const elements = document.querySelectorAll(selector);
-            for (let el of elements) {
-              const text = el.textContent || el.innerText;
-              if (text && text.length < 15) {
-                const clean = text.replace(/[^0-9]/g, '');
-                if (clean.length >= 5 && clean.length <= 7) {
-                  const val = parseInt(clean);
-                  if (val > 100000 && val < 500000) {
-                    return val;
-                  }
+          // Patrón 1: Buscar "Otros medios de pago" seguido del precio
+          const matchOtrosMedios = textoCompleto.match(/Otros medios de pago[^\d]*\$?([\d]{3}\.[\d]{3})/);
+          if (matchOtrosMedios) {
+            const precio = parseInt(matchOtrosMedios[1].replace(/\./g, ''));
+            if (precio > 100000 && precio < 500000) {
+              return precio;
+            }
+          }
+          
+          // Patrón 2: Buscar en elementos con clase best-price que NO estén tachados
+          const precioElements = document.querySelectorAll('[class*="best-price"], [class*="Price"]');
+          for (let el of precioElements) {
+            // Ignorar precios tachados
+            if (el.classList.contains('strikethrough') || 
+                el.closest('[class*="strikethrough"]') ||
+                window.getComputedStyle(el).textDecoration.includes('line-through')) {
+              continue;
+            }
+            
+            const text = el.textContent || el.innerText;
+            if (text && text.length < 15) {
+              const clean = text.replace(/[^0-9]/g, '');
+              if (clean.length >= 5 && clean.length <= 7) {
+                const val = parseInt(clean);
+                // Verificar que sea un precio razonable y NO el precio normal (399.990)
+                if (val > 100000 && val < 390000) {
+                  return val;
                 }
               }
             }
           }
+          
+          // Patrón 3: Buscar todos los precios y tomar el menor que no sea el tachado
+          const allPrices = [];
+          const allElements = document.querySelectorAll('*');
+          
+          for (let el of allElements) {
+            const text = el.textContent || el.innerText;
+            const match = text.match(/\$?\s*([\d]{3}\.[\d]{3})/);
+            
+            if (match && el.children.length === 0) { // Solo elementos hoja
+              const precio = parseInt(match[1].replace(/\./g, ''));
+              if (precio > 100000 && precio < 390000) {
+                // Verificar que no esté tachado
+                const style = window.getComputedStyle(el);
+                if (!style.textDecoration.includes('line-through')) {
+                  allPrices.push(precio);
+                }
+              }
+            }
+          }
+          
+          // Ordenar y tomar el precio más común que no sea 399990
+          const preciosFiltrados = allPrices.filter(p => p !== 399990);
+          if (preciosFiltrados.length > 0) {
+            // Contar frecuencias
+            const frecuencias = {};
+            for (let p of preciosFiltrados) {
+              frecuencias[p] = (frecuencias[p] || 0) + 1;
+            }
+            
+            // Encontrar el precio con mayor frecuencia
+            let maxFreq = 0;
+            let precioFinal = null;
+            for (let [precio, freq] of Object.entries(frecuencias)) {
+              if (freq > maxFreq) {
+                maxFreq = freq;
+                precioFinal = parseInt(precio);
+              }
+            }
+            
+            return precioFinal;
+          }
+          
           return null;
         });
         
