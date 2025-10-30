@@ -9,7 +9,7 @@ const urls = [
   {
     tienda: "Mercado Libre",
     url: "https://www.mercadolibre.cl/procesador-amd-ryzen-5-9600x-am5-39ghz54ghz-/up/MLCU3244552173",
-    selectorPrecio: ".andes-money-amount__fraction",
+    selectorPrecio: null, // Usaremos extracción especial
     selector_disponible: ".ui-pdp-buybox__quantity__available",
     esperaExtra: 5000,
   },
@@ -354,14 +354,12 @@ async function scrape() {
             return elementos.length >= 2 ? elementos[1].innerText : null;
           }, selectorPrecio);
         } else {
-          // Intentar selector, si falla buscar alternativas
           precio = await page.$eval(selectorPrecio, el => el.innerText).catch(async () => {
             console.log(`   ⚠️ Selector principal falló, buscando alternativas...`);
             return await page.evaluate((sel) => {
               const element = document.querySelector(sel);
               if (element) return element.textContent || element.innerText;
               
-              // Buscar en atributos y clases relacionadas
               const priceElements = document.querySelectorAll('[data-price], [class*="price"], [class*="Price"]');
               for (let el of priceElements) {
                 const text = el.textContent || el.innerText;
@@ -376,52 +374,74 @@ async function scrape() {
         }
         precio = limpiarPrecio(precio);
       } else {
-        // SP Digital - extracción especial
-        console.log(`   🔍 Buscando precio en SP Digital...`);
+        // Extracción especial para Mercado Libre y SP Digital
+        console.log(`   🔍 Buscando precio en ${tienda}...`);
         
         const html = await page.content();
         
-        // Guardar HTML para debug
-        fs.writeFileSync('sp-digital-debug.html', html);
-        
-        // Múltiples intentos de extracción
-        let match = html.match(/Otros medios de pago<\/span>.*?>\$?([\d\.]+)</s);
-        
-        if (!match) {
-          // Buscar todos los precios en el rango esperado
-          const todosPrecios = html.match(/\$?([\d]{3}\.[\d]{3})/g);
-          if (todosPrecios) {
-            console.log(`   📊 Precios encontrados: ${todosPrecios.join(', ')}`);
-            const preciosValidos = todosPrecios
-              .map(p => parseInt(p.replace(/[^0-9]/g, '')))
-              .filter(p => p > 100000 && p < 500000);
-            
-            if (preciosValidos.length > 0) {
-              precio = preciosValidos[preciosValidos.length - 1];
-              console.log(`   ✓ Precio seleccionado: ${precio}`);
-            }
-          }
-        } else {
-          precio = parseInt(match[1].replace(/\./g, ''));
+        if (tienda === "SP Digital") {
+          fs.writeFileSync('sp-digital-debug.html', html);
+        } else if (tienda === "Mercado Libre") {
+          fs.writeFileSync('mercadolibre-debug.html', html);
         }
         
-        // Último intento: ejecutar en el DOM
-        if (!precio) {
-          console.log(`   🔄 Intento final en DOM...`);
-          precio = await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
+        // Intentar encontrar precio con múltiples patrones
+        precio = await page.evaluate(() => {
+          // Patrón 1: Buscar en clases específicas
+          const selectors = [
+            '.andes-money-amount__fraction',
+            '[class*="price"]',
+            '[class*="Price"]',
+            '[data-price]',
+            '.price-tag-fraction'
+          ];
+          
+          for (let selector of selectors) {
+            const elements = document.querySelectorAll(selector);
             for (let el of elements) {
-              const text = el.textContent;
-              if (text && text.length < 20) {
-                const match = text.match(/\$?([\d]{3}\.[\d]{3})/);
-                if (match) {
-                  const val = parseInt(match[1].replace(/\./g, ''));
-                  if (val > 100000 && val < 500000) return val;
+              const text = el.textContent || el.innerText;
+              if (text && text.length < 15) {
+                const clean = text.replace(/[^0-9]/g, '');
+                if (clean.length >= 5 && clean.length <= 7) {
+                  const val = parseInt(clean);
+                  if (val > 100000 && val < 500000) {
+                    return val;
+                  }
                 }
               }
             }
-            return null;
-          });
+          }
+          
+          // Patrón 2: Buscar en todo el DOM números que parezcan precios
+          const allText = document.body.innerText;
+          const matches = allText.match(/\$?\s*([\d]{3}\.[\d]{3})/g);
+          if (matches) {
+            for (let match of matches) {
+              const val = parseInt(match.replace(/[^0-9]/g, ''));
+              if (val > 100000 && val < 500000) {
+                return val;
+              }
+            }
+          }
+          
+          return null;
+        });
+        
+        if (!precio) {
+          // Último intento con regex en HTML
+          const matches = html.match(/>([\d]{3}\.[\d]{3})</g);
+          if (matches) {
+            console.log(`   📊 Precios encontrados en HTML: ${matches.slice(0, 5).join(', ')}`);
+            const preciosValidos = matches
+              .map(m => parseInt(m.replace(/[^0-9]/g, '')))
+              .filter(p => p > 100000 && p < 500000);
+            
+            if (preciosValidos.length > 0) {
+              // Tomar el primer precio válido (usualmente es el correcto)
+              precio = preciosValidos[0];
+              console.log(`   ✓ Precio seleccionado: ${precio}`);
+            }
+          }
         }
       }
 
