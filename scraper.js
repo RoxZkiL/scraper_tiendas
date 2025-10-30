@@ -8,10 +8,11 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const urls = [
   {
     tienda: "Mercado Libre",
-    url: "https://www.mercadolibre.cl/p/MLC39391929",
-    selectorPrecio: ".andes-money-amount__fraction",
+    url: "https://www.mercadolibre.cl/procesador-amd-ryzen-5-9600x-am5-39ghz54ghz-/up/MLCU3244552173",
+    selectorPrecio: null, // Extracción especial
     selector_disponible: ".ui-pdp-buybox__quantity__available",
-    esperaExtra: 5000,
+    esperaExtra: 8000,
+    manejarMercadoLibre: true,
   },
   {
     tienda: "Tecnomas",
@@ -126,77 +127,6 @@ async function verificarDisponibilidad(page, selector_disponible) {
     
   } catch (error) {
     return null;
-  }
-}
-
-async function obtenerDatosMercadoLibre(itemId, usarCatalogo = false) {
-  try {
-    console.log(`   🔍 Consultando API de Mercado Libre...`);
-    
-    let url, data;
-    
-    if (usarCatalogo) {
-      url = `https://api.mercadolibre.com/products/${itemId}`;
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        console.log(`   ❌ Error API catálogo: ${response.status}`);
-        return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
-      }
-      
-      data = await response.json();
-      
-      const buyBoxResponse = await fetch(`https://api.mercadolibre.com/products/${itemId}/buy_box`);
-      let precio = null;
-      let disponible = false;
-      
-      if (buyBoxResponse.ok) {
-        const buyBox = await buyBoxResponse.json();
-        if (buyBox && buyBox.price) {
-          precio = buyBox.price;
-          disponible = buyBox.available_quantity > 0;
-        }
-      }
-      
-      if (!precio && data.buy_box_winner && data.buy_box_winner.price) {
-        precio = data.buy_box_winner.price;
-        disponible = data.buy_box_winner.available_quantity > 0;
-      }
-      
-      const permalink = data.permalink || `https://www.mercadolibre.cl/p/${itemId}`;
-      
-      console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'}`);
-      console.log(`   ✅ Disponible: ${disponible ? 'Sí' : 'No'}`);
-      
-      return { precio, disponible, url: permalink };
-      
-    } else {
-      url = `https://api.mercadolibre.com/items/${itemId}`;
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        console.log(`   ❌ Error API: ${response.status}`);
-        return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
-      }
-      
-      data = await response.json();
-      
-      const precio = data.price || null;
-      const disponible = data.status === 'active' && 
-                        data.available_quantity > 0 &&
-                        !data.sold_out;
-      const permalink = data.permalink || `https://www.mercadolibre.cl/p/${itemId}`;
-      
-      console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'}`);
-      console.log(`   📦 Stock: ${data.available_quantity || 0} unidades`);
-      console.log(`   ✅ Disponible: ${disponible ? 'Sí' : 'No'}`);
-      
-      return { precio, disponible, url: permalink };
-    }
-    
-  } catch (error) {
-    console.error(`   ❌ Error consultando API: ${error.message}`);
-    return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
   }
 }
 
@@ -385,7 +315,7 @@ async function scrape() {
   const resultados = [];
 
   for (const tiendaObj of urls) {
-    const { tienda, esAPI, itemId, usarRealBrowser, usarCatalogo } = tiendaObj;
+    const { tienda, usarRealBrowser } = tiendaObj;
     console.log(`🛒 ${tienda}...`);
     
     let precio = null;
@@ -393,17 +323,7 @@ async function scrape() {
     let url = tiendaObj.url || '';
     let ok = false;
 
-    if (esAPI && itemId) {
-      const datos = await obtenerDatosMercadoLibre(itemId, usarCatalogo);
-      precio = datos.precio;
-      disponible = datos.disponible;
-      url = datos.url;
-      ok = precio !== null;
-      
-      resultados.push({ tienda, url, precio, disponible, ok });
-      continue;
-    }
-
+    // SP DIGITAL: Usar puppeteer-real-browser si está disponible
     if (usarRealBrowser && puppeteerReal) {
       try {
         console.log(`   🛡️ Usando puppeteer-real-browser para bypass Cloudflare...`);
@@ -565,10 +485,41 @@ async function scrape() {
         await page.setViewport({ width: 1920, height: 1080 });
       }
 
-      const { selectorPrecio, selector_disponible, tomarSegundoPrecio, esperaExtra } = tiendaObj;
+      const { selectorPrecio, selector_disponible, tomarSegundoPrecio, esperaExtra, manejarMercadoLibre } = tiendaObj;
       
       await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
       await new Promise(r => setTimeout(r, esperaExtra || 3000));
+      
+      // MANEJO ESPECIAL: Mercado Libre con página de intercepción
+      if (manejarMercadoLibre) {
+        const contenido = await page.content();
+        
+        // Verificar si hay página de login/intercepción
+        if (contenido.includes('Ya tengo cuenta') || contenido.includes('Soy nuevo')) {
+          console.log(`   🚪 Detectada página de intercepción, haciendo clic...`);
+          
+          const clicked = await page.evaluate(() => {
+            const botones = Array.from(document.querySelectorAll('a, button'));
+            const boton = botones.find(b => 
+              (b.textContent || '').toLowerCase().includes('ya tengo cuenta')
+            );
+            if (boton) {
+              boton.click();
+              return true;
+            }
+            return false;
+          });
+          
+          if (clicked) {
+            await page.waitForNavigation({ timeout: 10000, waitUntil: 'networkidle2' }).catch(() => {});
+            await new Promise(r => setTimeout(r, 5000));
+          }
+        }
+        
+        // Guardar HTML para debug
+        const htmlFinal = await page.content();
+        fs.writeFileSync('Mercado-Libre-debug.html', htmlFinal);
+      }
       
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await new Promise(r => setTimeout(r, 1000));
@@ -583,6 +534,58 @@ async function scrape() {
           precio = await page.$eval(selectorPrecio, el => el.innerText).catch(() => null);
         }
         precio = limpiarPrecio(precio);
+      } else if (manejarMercadoLibre) {
+        // Extracción especial para Mercado Libre
+        console.log(`   🔍 Extrayendo precio de Mercado Libre...`);
+        
+        precio = await page.evaluate(() => {
+          // Estrategia 1: Buscar el precio principal con la clase específica de ML
+          const precioFraction = document.querySelector('.andes-money-amount__fraction');
+          if (precioFraction) {
+            const texto = precioFraction.textContent || precioFraction.innerText;
+            const limpio = texto.replace(/[^0-9]/g, '');
+            const valor = parseInt(limpio);
+            if (valor > 100000 && valor < 500000) {
+              return valor;
+            }
+          }
+          
+          // Estrategia 2: Buscar en la estructura de precios de ML
+          const precioElements = document.querySelectorAll('[class*="price"], [class*="andes-money-amount"]');
+          for (let el of precioElements) {
+            // Ignorar precios tachados
+            const style = window.getComputedStyle(el);
+            if (style.textDecoration.includes('line-through')) {
+              continue;
+            }
+            
+            const texto = el.textContent || el.innerText;
+            if (texto && texto.length < 20) {
+              const limpio = texto.replace(/[^0-9]/g, '');
+              if (limpio.length >= 5 && limpio.length <= 7) {
+                const valor = parseInt(limpio);
+                if (valor > 100000 && valor < 500000) {
+                  return valor;
+                }
+              }
+            }
+          }
+          
+          // Estrategia 3: Buscar en el texto completo
+          const bodyText = document.body.innerText;
+          const matches = bodyText.match(/\$\s*([\d]{3}\.[\d]{3})/g);
+          if (matches && matches.length > 0) {
+            // Tomar el primer precio válido
+            for (let match of matches) {
+              const valor = parseInt(match.replace(/[^0-9]/g, ''));
+              if (valor > 100000 && valor < 500000) {
+                return valor;
+              }
+            }
+          }
+          
+          return null;
+        });
       }
 
       disponible = await verificarDisponibilidad(page, selector_disponible);
