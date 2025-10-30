@@ -1,5 +1,4 @@
-// scraper.js - Con API de Mercado Libre y sin SP Digital
-const puppeteer = require('puppeteer');
+// scraper.js - Con puppeteer-real-browser para SP Digital
 const fs = require('fs');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -8,9 +7,8 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const urls = [
   {
     tienda: "Mercado Libre",
-    // Usando la API oficial de Mercado Libre
     esAPI: true,
-    itemId: "MLCU3244552173", // ID del producto
+    itemId: "MLCU3244552173",
   },
   {
     tienda: "Tecnomas",
@@ -51,14 +49,14 @@ const urls = [
     selector_disponible: ".add-to-cart",
     tomarSegundoPrecio: true,
   },
-  // SP Digital comentado porque Cloudflare bloquea siempre
-  // {
-  //   tienda: "SP Digital",
-  //   url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
-  //   selectorPrecio: null,
-  //   selector_disponible: "button[class*='add-to-cart']",
-  //   esperaExtra: 12000,
-  // },
+  {
+    tienda: "SP Digital",
+    url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
+    selectorPrecio: null,
+    selector_disponible: "button[class*='add-to-cart']",
+    usarRealBrowser: true, // Usar puppeteer-real-browser para este sitio
+    esperaExtra: 15000,
+  },
 ];
 
 function limpiarPrecio(text) {
@@ -127,7 +125,6 @@ async function verificarDisponibilidad(page, selector_disponible) {
   }
 }
 
-// Función para obtener datos de Mercado Libre vía API
 async function obtenerDatosMercadoLibre(itemId) {
   try {
     console.log(`   🔍 Consultando API de Mercado Libre...`);
@@ -326,15 +323,29 @@ function generarMensaje(datos, comparacion) {
 }
 
 async function scrape() {
-  console.log('🚀 Iniciando scraper optimizado (API ML + sin SP Digital)...\n');
+  console.log('🚀 Iniciando scraper con bypass Cloudflare...\n');
 
+  // Importación dinámica de puppeteer-real-browser
+  let puppeteerReal;
+  try {
+    const { connect } = await import('puppeteer-real-browser');
+    puppeteerReal = connect;
+  } catch (e) {
+    console.log('⚠️ puppeteer-real-browser no disponible, usando puppeteer normal');
+  }
+
+  // Importación de puppeteer regular
+  const puppeteer = require('puppeteer');
+  
   let browser;
   let page;
+  let realBrowser;
+  let realPage;
   
   const resultados = [];
 
   for (const tiendaObj of urls) {
-    const { tienda, esAPI, itemId } = tiendaObj;
+    const { tienda, esAPI, itemId, usarRealBrowser } = tiendaObj;
     console.log(`🛒 ${tienda}...`);
     
     let precio = null;
@@ -351,12 +362,102 @@ async function scrape() {
       ok = precio !== null;
       
       resultados.push({ tienda, url, precio, disponible, ok });
-      continue; // Siguiente tienda
+      continue;
     }
 
-    // RESTO DE TIENDAS: Usar Puppeteer
+    // SP DIGITAL: Usar puppeteer-real-browser si está disponible
+    if (usarRealBrowser && puppeteerReal) {
+      try {
+        console.log(`   🛡️ Usando puppeteer-real-browser para bypass Cloudflare...`);
+        
+        if (!realBrowser) {
+          const response = await puppeteerReal({
+            headless: false,
+            args: [],
+            turnstile: true,
+            connectOption: {},
+            disableXvfb: false,
+            ignoreAllFlags: false
+          });
+          
+          realBrowser = response.browser;
+          realPage = response.page;
+        }
+
+        await realPage.goto(url, { 
+          waitUntil: "networkidle2", 
+          timeout: 90000 
+        });
+        
+        const { esperaExtra } = tiendaObj;
+        await new Promise(r => setTimeout(r, esperaExtra || 15000));
+        
+        console.log(`   ⏳ Esperando bypass de Cloudflare...`);
+        
+        // Verificar si pasamos Cloudflare
+        const pasoCF = await realPage.evaluate(() => {
+          return !document.body.innerHTML.includes('Cloudflare');
+        });
+        
+        if (!pasoCF) {
+          console.log(`   ❌ No se pudo pasar Cloudflare`);
+          resultados.push({ tienda, url, precio, disponible, ok });
+          continue;
+        }
+        
+        console.log(`   ✅ Cloudflare bypassed!`);
+        
+        // Scroll
+        await realPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise(r => setTimeout(r, 2000));
+        
+        // Extraer precio
+        const html = await realPage.content();
+        fs.writeFileSync('SP-Digital-success.html', html);
+        
+        precio = await realPage.evaluate(() => {
+          const selectors = [
+            '[class*="price"]',
+            '[class*="Price"]',
+            '[data-price]',
+          ];
+          
+          for (let selector of selectors) {
+            const elements = document.querySelectorAll(selector);
+            for (let el of elements) {
+              const text = el.textContent || el.innerText;
+              if (text && text.length < 15) {
+                const clean = text.replace(/[^0-9]/g, '');
+                if (clean.length >= 5 && clean.length <= 7) {
+                  const val = parseInt(clean);
+                  if (val > 100000 && val < 500000) {
+                    return val;
+                  }
+                }
+              }
+            }
+          }
+          return null;
+        });
+        
+        disponible = await verificarDisponibilidad(realPage, tiendaObj.selector_disponible);
+        ok = precio !== null;
+        
+        const icon = disponible ? '✅' : '❌';
+        console.log(`   💰 $${precio?.toLocaleString('es-CL') || 'N/A'} ${icon}`);
+        
+        resultados.push({ tienda, url, precio, disponible, ok });
+        continue;
+        
+      } catch (err) {
+        console.error(`   ❌ Error con real-browser: ${err.message}`);
+        resultados.push({ tienda, url, precio, disponible, ok });
+        continue;
+      }
+    }
+
+    // RESTO DE TIENDAS: Puppeteer normal
     try {
-      // Inicializar browser solo cuando se necesita
       if (!browser) {
         browser = await puppeteer.launch({
           headless: 'new',
@@ -365,42 +466,22 @@ async function scrape() {
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-blink-features=AutomationControlled',
           ],
         });
         
         page = await browser.newPage();
-        
-        await page.evaluateOnNewDocument(() => {
-          Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        });
-        
-        await page.setExtraHTTPHeaders({
-          'Accept-Language': 'es-CL,es;q=0.9,en;q=0.8',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        });
-        
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
         await page.setViewport({ width: 1920, height: 1080 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
       }
 
       const { selectorPrecio, selector_disponible, tomarSegundoPrecio, esperaExtra } = tiendaObj;
       
-      await page.goto(url, { 
-        waitUntil: "networkidle2", 
-        timeout: 60000 
-      });
+      await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+      await new Promise(r => setTimeout(r, esperaExtra || 3000));
       
-      const tiempoEspera = esperaExtra || 3000;
-      await new Promise(r => setTimeout(r, tiempoEspera));
-      
-      // Scroll para lazy loading
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await new Promise(r => setTimeout(r, 1000));
 
-      // Extraer precio
       if (selectorPrecio) {
         if (tomarSegundoPrecio) {
           precio = await page.evaluate((selector) => {
@@ -426,9 +507,8 @@ async function scrape() {
     resultados.push({ tienda, url, precio, disponible, ok });
   }
 
-  if (browser) {
-    await browser.close();
-  }
+  if (browser) await browser.close();
+  if (realBrowser) await realBrowser.close();
 
   const datos = {
     timestamp: new Date().toISOString(),
