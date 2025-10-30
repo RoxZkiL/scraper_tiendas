@@ -1,4 +1,4 @@
-// scraper.js - Versión optimizada para GitHub Actions + Telegram
+// scraper.js - Versión mejorada con anti-detección avanzada
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 
@@ -9,9 +9,10 @@ const urls = [
   {
     tienda: "Mercado Libre",
     url: "https://www.mercadolibre.cl/procesador-amd-ryzen-5-9600x-am5-39ghz54ghz-/up/MLCU3244552173",
-    selectorPrecio: null, // Usaremos extracción especial
+    selectorPrecio: null,
     selector_disponible: ".ui-pdp-buybox__quantity__available",
-    esperaExtra: 5000,
+    esperaExtra: 8000,
+    manejarIntercepcion: true, // Manejar página de login
   },
   {
     tienda: "Tecnomas",
@@ -57,7 +58,8 @@ const urls = [
     url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
     selectorPrecio: null,
     selector_disponible: "button[class*='add-to-cart']",
-    esperaExtra: 6000,
+    esperaExtra: 10000,
+    bypassCloudflare: true, // Activar bypass especial
   },
 ];
 
@@ -293,8 +295,86 @@ function generarMensaje(datos, comparacion) {
   return mensaje;
 }
 
+// Función para simular comportamiento humano
+async function comportamientoHumano(page) {
+  // Movimientos aleatorios del mouse
+  await page.mouse.move(100, 100);
+  await page.mouse.move(300, 200);
+  await new Promise(r => setTimeout(r, 500 + Math.random() * 1000));
+  
+  // Scroll suave
+  await page.evaluate(() => {
+    window.scrollTo({ top: 300, behavior: 'smooth' });
+  });
+  await new Promise(r => setTimeout(r, 1000));
+}
+
+// Configurar página con anti-detección avanzada
+async function configurarPaginaAntiDeteccion(page) {
+  // Ocultar webdriver y automatización
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    
+    // Eliminar variables de automatización
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+    
+    // Simular plugins y características de navegador real
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5]
+    });
+    
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['es-CL', 'es', 'en']
+    });
+    
+    // Simular características de Chrome real
+    window.chrome = {
+      runtime: {}
+    };
+    
+    // Permisos
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+  });
+
+  // Headers realistas
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'es-CL,es;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'max-age=0',
+    'Sec-Ch-Ua': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="24"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
+  });
+
+  // User agent realista
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  );
+  
+  await page.setViewport({ 
+    width: 1920, 
+    height: 1080,
+    deviceScaleFactor: 1,
+    hasTouch: false,
+    isLandscape: true
+  });
+}
+
 async function scrape() {
-  console.log('🚀 Iniciando scraper...\n');
+  console.log('🚀 Iniciando scraper con anti-detección avanzada...\n');
 
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -305,28 +385,33 @@ async function scrape() {
       '--disable-gpu',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-blink-features=AutomationControlled'
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+      '--window-size=1920,1080',
+      '--start-maximized',
+      // Args adicionales para evitar detección
+      '--disable-blink-features=AutomationControlled',
+      '--exclude-switches=enable-automation',
+      '--disable-dev-shm-usage',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-extensions'
     ],
+    ignoreHTTPSErrors: true
   });
 
   const page = await browser.newPage();
-  
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'es-CL,es;q=0.9,en;q=0.8',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-  });
-  
-  await page.setViewport({ width: 1920, height: 1080 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-  
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-  });
+  await configurarPaginaAntiDeteccion(page);
 
   const resultados = [];
 
   for (const tiendaObj of urls) {
-    const { tienda, url, selectorPrecio, selector_disponible, tomarSegundoPrecio, esperaExtra } = tiendaObj;
+    const { 
+      tienda, url, selectorPrecio, selector_disponible, 
+      tomarSegundoPrecio, esperaExtra, manejarIntercepcion, 
+      bypassCloudflare 
+    } = tiendaObj;
+    
     console.log(`🛒 ${tienda}...`);
     
     let precio = null;
@@ -334,17 +419,100 @@ async function scrape() {
     let ok = false;
 
     try {
-      await page.goto(url, { 
-        waitUntil: "networkidle2", 
+      // Navegar con opciones más realistas
+      const response = await page.goto(url, { 
+        waitUntil: ["domcontentloaded", "networkidle2"],
         timeout: 60000 
       });
+
+      console.log(`   📡 Status: ${response?.status()}`);
+      
+      // Comportamiento humano inicial
+      await comportamientoHumano(page);
       
       const tiempoEspera = esperaExtra || 3000;
       await new Promise(r => setTimeout(r, tiempoEspera));
+
+      // MANEJO ESPECIAL: Mercado Libre - Detectar y manejar página de login
+      if (manejarIntercepcion) {
+        const urlActual = page.url();
+        const contenidoPagina = await page.content();
+        
+        console.log(`   🔍 URL actual: ${urlActual}`);
+        
+        // Verificar si estamos en la página de login/intercepción
+        const esIntercepcion = contenidoPagina.includes('Ya tengo cuenta') || 
+                              contenidoPagina.includes('Soy nuevo') ||
+                              urlActual.includes('login');
+        
+        if (esIntercepcion) {
+          console.log(`   🚪 Detectada página de login, intentando clickear "Ya tengo cuenta"...`);
+          
+          try {
+            // Buscar y clickear el botón "Ya tengo cuenta"
+            const botonClicked = await page.evaluate(() => {
+              const botones = Array.from(document.querySelectorAll('button, a'));
+              const boton = botones.find(b => 
+                (b.textContent || '').toLowerCase().includes('ya tengo cuenta') ||
+                (b.textContent || '').toLowerCase().includes('tengo cuenta')
+              );
+              
+              if (boton) {
+                boton.click();
+                return true;
+              }
+              return false;
+            });
+            
+            if (botonClicked) {
+              console.log(`   ✓ Click realizado, esperando redirección...`);
+              await page.waitForNavigation({ timeout: 10000, waitUntil: 'networkidle2' }).catch(() => {});
+              await new Promise(r => setTimeout(r, 3000));
+            } else {
+              console.log(`   ⚠️ No se encontró botón para clickear`);
+            }
+          } catch (e) {
+            console.log(`   ⚠️ Error manejando intercepción: ${e.message}`);
+          }
+        }
+      }
+
+      // MANEJO ESPECIAL: SP Digital - Bypass Cloudflare
+      if (bypassCloudflare) {
+        const esCloudflare = await page.evaluate(() => {
+          return document.body.innerHTML.includes('Cloudflare') || 
+                 document.body.innerHTML.includes('challenge');
+        });
+        
+        if (esCloudflare) {
+          console.log(`   ⏳ Detectado Cloudflare, esperando challenge...`);
+          await new Promise(r => setTimeout(r, 15000)); // Esperar más tiempo
+          
+          // Reintentar navegación
+          await page.goto(url, { 
+            waitUntil: "networkidle2", 
+            timeout: 60000 
+          });
+          await new Promise(r => setTimeout(r, 5000));
+        }
+      }
       
       // Scroll para lazy loading
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight / 2);
+      });
       await new Promise(r => setTimeout(r, 1000));
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await new Promise(r => setTimeout(r, 1500));
+
+      // Guardar HTML para debug
+      const html = await page.content();
+      if (tienda === "SP Digital" || tienda === "Mercado Libre") {
+        fs.writeFileSync(`${tienda.replace(/\s+/g, '-')}-debug.html`, html);
+        console.log(`   💾 HTML guardado para debug`);
+      }
 
       // Extraer precio
       if (selectorPrecio) {
@@ -354,46 +522,20 @@ async function scrape() {
             return elementos.length >= 2 ? elementos[1].innerText : null;
           }, selectorPrecio);
         } else {
-          precio = await page.$eval(selectorPrecio, el => el.innerText).catch(async () => {
-            console.log(`   ⚠️ Selector principal falló, buscando alternativas...`);
-            return await page.evaluate((sel) => {
-              const element = document.querySelector(sel);
-              if (element) return element.textContent || element.innerText;
-              
-              const priceElements = document.querySelectorAll('[data-price], [class*="price"], [class*="Price"]');
-              for (let el of priceElements) {
-                const text = el.textContent || el.innerText;
-                if (text && /\d{3,}/.test(text.replace(/\./g, ''))) {
-                  const match = text.match(/[\d\.]+/);
-                  if (match) return match[0];
-                }
-              }
-              return null;
-            }, selectorPrecio);
-          });
+          precio = await page.$eval(selectorPrecio, el => el.innerText).catch(() => null);
         }
         precio = limpiarPrecio(precio);
       } else {
-        // Extracción especial para Mercado Libre y SP Digital
-        console.log(`   🔍 Buscando precio en ${tienda}...`);
-        
-        const html = await page.content();
-        
-        if (tienda === "SP Digital") {
-          fs.writeFileSync('sp-digital-debug.html', html);
-        } else if (tienda === "Mercado Libre") {
-          fs.writeFileSync('mercadolibre-debug.html', html);
-        }
-        
-        // Intentar encontrar precio con múltiples patrones
+        // Extracción inteligente de precio
         precio = await page.evaluate(() => {
-          // Patrón 1: Buscar en clases específicas
           const selectors = [
             '.andes-money-amount__fraction',
+            '[class*="price-tag"]',
             '[class*="price"]',
             '[class*="Price"]',
             '[data-price]',
-            '.price-tag-fraction'
+            '.price',
+            '.precio'
           ];
           
           for (let selector of selectors) {
@@ -412,7 +554,7 @@ async function scrape() {
             }
           }
           
-          // Patrón 2: Buscar en todo el DOM números que parezcan precios
+          // Buscar en texto completo
           const allText = document.body.innerText;
           const matches = allText.match(/\$?\s*([\d]{3}\.[\d]{3})/g);
           if (matches) {
@@ -426,23 +568,6 @@ async function scrape() {
           
           return null;
         });
-        
-        if (!precio) {
-          // Último intento con regex en HTML
-          const matches = html.match(/>([\d]{3}\.[\d]{3})</g);
-          if (matches) {
-            console.log(`   📊 Precios encontrados en HTML: ${matches.slice(0, 5).join(', ')}`);
-            const preciosValidos = matches
-              .map(m => parseInt(m.replace(/[^0-9]/g, '')))
-              .filter(p => p > 100000 && p < 500000);
-            
-            if (preciosValidos.length > 0) {
-              // Tomar el primer precio válido (usualmente es el correcto)
-              precio = preciosValidos[0];
-              console.log(`   ✓ Precio seleccionado: ${precio}`);
-            }
-          }
-        }
       }
 
       disponible = await verificarDisponibilidad(page, selector_disponible);
@@ -474,6 +599,9 @@ async function scrape() {
     }
 
     resultados.push({ tienda, url, precio, disponible, ok });
+    
+    // Pequeña pausa entre tiendas
+    await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
   }
 
   await browser.close();
