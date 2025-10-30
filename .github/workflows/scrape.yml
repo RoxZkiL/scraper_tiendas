@@ -18,8 +18,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      - uses: actions/upload-artifact@v4
+      - name: Upload results and debug files
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results
-          path: results.json
+          name: scraper-results-${{ github.run_number }}
+          path: |
+            results.json
+            *.png
+            *.html
+          retention-days: 3
