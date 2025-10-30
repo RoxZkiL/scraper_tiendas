@@ -1,5 +1,6 @@
-// scraper.js - Con puppeteer-real-browser para SP Digital
-const fs = require('fs');
+// scraper.js - Con ES Modules y puppeteer-real-browser para SP Digital
+import fs from 'fs';
+import puppeteer from 'puppeteer';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -8,7 +9,8 @@ const urls = [
   {
     tienda: "Mercado Libre",
     esAPI: true,
-    itemId: "MLCU3244552173",
+    itemId: "MLC39391929",
+    usarCatalogo: true,
   },
   {
     tienda: "Tecnomas",
@@ -54,7 +56,7 @@ const urls = [
     url: "https://www.spdigital.cl/amd-ryzen-5-9600x-6-core-processor/",
     selectorPrecio: null,
     selector_disponible: "button[class*='add-to-cart']",
-    usarRealBrowser: true, // Usar puppeteer-real-browser para este sitio
+    usarRealBrowser: true,
     esperaExtra: 15000,
   },
 ];
@@ -125,30 +127,70 @@ async function verificarDisponibilidad(page, selector_disponible) {
   }
 }
 
-async function obtenerDatosMercadoLibre(itemId) {
+async function obtenerDatosMercadoLibre(itemId, usarCatalogo = false) {
   try {
     console.log(`   🔍 Consultando API de Mercado Libre...`);
     
-    const response = await fetch(`https://api.mercadolibre.com/items/${itemId}`);
+    let url, data;
     
-    if (!response.ok) {
-      console.log(`   ❌ Error API: ${response.status}`);
-      return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
+    if (usarCatalogo) {
+      url = `https://api.mercadolibre.com/products/${itemId}`;
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        console.log(`   ❌ Error API catálogo: ${response.status}`);
+        return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
+      }
+      
+      data = await response.json();
+      
+      const buyBoxResponse = await fetch(`https://api.mercadolibre.com/products/${itemId}/buy_box`);
+      let precio = null;
+      let disponible = false;
+      
+      if (buyBoxResponse.ok) {
+        const buyBox = await buyBoxResponse.json();
+        if (buyBox && buyBox.price) {
+          precio = buyBox.price;
+          disponible = buyBox.available_quantity > 0;
+        }
+      }
+      
+      if (!precio && data.buy_box_winner && data.buy_box_winner.price) {
+        precio = data.buy_box_winner.price;
+        disponible = data.buy_box_winner.available_quantity > 0;
+      }
+      
+      const permalink = data.permalink || `https://www.mercadolibre.cl/p/${itemId}`;
+      
+      console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'}`);
+      console.log(`   ✅ Disponible: ${disponible ? 'Sí' : 'No'}`);
+      
+      return { precio, disponible, url: permalink };
+      
+    } else {
+      url = `https://api.mercadolibre.com/items/${itemId}`;
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        console.log(`   ❌ Error API: ${response.status}`);
+        return { precio: null, disponible: null, url: `https://www.mercadolibre.cl/p/${itemId}` };
+      }
+      
+      data = await response.json();
+      
+      const precio = data.price || null;
+      const disponible = data.status === 'active' && 
+                        data.available_quantity > 0 &&
+                        !data.sold_out;
+      const permalink = data.permalink || `https://www.mercadolibre.cl/p/${itemId}`;
+      
+      console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'}`);
+      console.log(`   📦 Stock: ${data.available_quantity || 0} unidades`);
+      console.log(`   ✅ Disponible: ${disponible ? 'Sí' : 'No'}`);
+      
+      return { precio, disponible, url: permalink };
     }
-    
-    const data = await response.json();
-    
-    const precio = data.price || null;
-    const disponible = data.status === 'active' && 
-                      data.available_quantity > 0 &&
-                      !data.sold_out;
-    const url = data.permalink || `https://www.mercadolibre.cl/p/${itemId}`;
-    
-    console.log(`   💰 Precio: $${precio?.toLocaleString('es-CL') || 'N/A'}`);
-    console.log(`   📦 Stock: ${data.available_quantity || 0} unidades`);
-    console.log(`   ✅ Disponible: ${disponible ? 'Sí' : 'No'}`);
-    
-    return { precio, disponible, url };
     
   } catch (error) {
     console.error(`   ❌ Error consultando API: ${error.message}`);
@@ -325,17 +367,13 @@ function generarMensaje(datos, comparacion) {
 async function scrape() {
   console.log('🚀 Iniciando scraper con bypass Cloudflare...\n');
 
-  // Importación dinámica de puppeteer-real-browser
   let puppeteerReal;
   try {
-    const { connect } = await import('puppeteer-real-browser');
-    puppeteerReal = connect;
+    const imported = await import('puppeteer-real-browser');
+    puppeteerReal = imported.connect;
   } catch (e) {
-    console.log('⚠️ puppeteer-real-browser no disponible, usando puppeteer normal');
+    console.log('⚠️ puppeteer-real-browser no disponible, SP Digital será omitido');
   }
-
-  // Importación de puppeteer regular
-  const puppeteer = require('puppeteer');
   
   let browser;
   let page;
@@ -345,7 +383,7 @@ async function scrape() {
   const resultados = [];
 
   for (const tiendaObj of urls) {
-    const { tienda, esAPI, itemId, usarRealBrowser } = tiendaObj;
+    const { tienda, esAPI, itemId, usarRealBrowser, usarCatalogo } = tiendaObj;
     console.log(`🛒 ${tienda}...`);
     
     let precio = null;
@@ -353,9 +391,8 @@ async function scrape() {
     let url = tiendaObj.url || '';
     let ok = false;
 
-    // MERCADO LIBRE: Usar API
     if (esAPI && itemId) {
-      const datos = await obtenerDatosMercadoLibre(itemId);
+      const datos = await obtenerDatosMercadoLibre(itemId, usarCatalogo);
       precio = datos.precio;
       disponible = datos.disponible;
       url = datos.url;
@@ -365,7 +402,6 @@ async function scrape() {
       continue;
     }
 
-    // SP DIGITAL: Usar puppeteer-real-browser si está disponible
     if (usarRealBrowser && puppeteerReal) {
       try {
         console.log(`   🛡️ Usando puppeteer-real-browser para bypass Cloudflare...`);
@@ -394,7 +430,6 @@ async function scrape() {
         
         console.log(`   ⏳ Esperando bypass de Cloudflare...`);
         
-        // Verificar si pasamos Cloudflare
         const pasoCF = await realPage.evaluate(() => {
           return !document.body.innerHTML.includes('Cloudflare');
         });
@@ -407,11 +442,9 @@ async function scrape() {
         
         console.log(`   ✅ Cloudflare bypassed!`);
         
-        // Scroll
         await realPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
         await new Promise(r => setTimeout(r, 2000));
         
-        // Extraer precio
         const html = await realPage.content();
         fs.writeFileSync('SP-Digital-success.html', html);
         
@@ -456,7 +489,6 @@ async function scrape() {
       }
     }
 
-    // RESTO DE TIENDAS: Puppeteer normal
     try {
       if (!browser) {
         browser = await puppeteer.launch({
